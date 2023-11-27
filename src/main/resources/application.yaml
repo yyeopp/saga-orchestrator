@@ -1,0 +1,32 @@
+logging:
+  level:
+    root: ${LOG_LEVEL_ROOT:INFO}
+    coc: ${LOG_LEVEL_GMD:DEBUG}
+spring:
+  kafka:
+    bootstrap-servers:
+      - ${KAFKA_NODE1:broker1.com:80}
+      - ${KAFKA_NODE2:broker2.com:80}
+      - ${KAFKA_NODE3:broker3.com:80}
+    consumer:
+      auto-offset-reset: latest # What to do when there is no initial offset in Kafka or if the current offset no longer exists on the server.
+#      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+#      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      enable-auto-commit: true # Whether the consumer's offset is periodically committed in the background.
+#      properties:
+#        spring:
+#          json:
+#            trusted:
+#              packages: '*'
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+coc:
+#  event:
+#    limit: ${GMD_EVENT_LIMIT:100}
+  kafka:
+    node1: ${KAFKA_NODE1:broker1.com:80}
+    node2: ${KAFKA_NODE2:broker2.com:80}
+    node3: ${KAFKA_NODE3:broker3.com:80}
+server:
+  port: 8080
