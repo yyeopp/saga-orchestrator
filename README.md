@@ -1,17 +1,17 @@
 # System Concept
 
- ![](.\image\System%20Concept.png)
+ ![](.\image\System_Concept.png)
 
 
 
 # Sequential & Synchronized Orchestration
 
-![](.\image\Sequential%20&%20Synchronized%20Orchestration.png)
+![](.\image\Sequential&Synchronized_Orchestration.png)
 
 
 
 # Compensating Transaction for SAGA
 
-![](.\image\Compensating%20Transaction%20for%20SAGA.png)
+![](.\image\Compensating_Transaction_for_SAGA.png)
 
 
