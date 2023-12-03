@@ -1,6 +1,3 @@
-# SAGA-Orchestrator with KafkaQueue & Sync process
-
----
 
 ## Goal
 
@@ -179,11 +176,9 @@ SAGA 구현과 같은 아키텍처 레벨의 고민을 최소화한 가운데 �
 
 ---
 
-## P.S.
+## P. S.
 
-개발 기간 : 2023.11.24 ~ 2023.11.26
-
-- BlockingQueue 를 활용한 Sync Process 아이디어는 레퍼런스가 따로 존재함을 알림
+개발 기간 : 2023.11.21 ~ 2023.11.26
 
 추후 개선 과제
 
@@ -193,8 +188,8 @@ SAGA 구현과 같은 아키텍처 레벨의 고민을 최소화한 가운데 �
 
 - Kafka Topic 네이밍 룰을 강제하기 위한 시스템 마련
 
-- `Orchestration` 관련 코드 안정성 확보 (예외처리 하나도 안됨)
+- `Orchestration` 공통 코드 안정성 확보 (예외처리 등)
 
-- `Orchestration` 관련 코드 Freezing 및 library 화
+- `Orchestration` 공통 코드 Freezing 및 library packaging
 
 
