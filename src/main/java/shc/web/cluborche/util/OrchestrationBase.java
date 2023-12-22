@@ -9,6 +9,7 @@ import shc.web.cluborche.dto.KafkaOrchestrationDto;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 @Slf4j
@@ -28,8 +29,8 @@ public class OrchestrationBase implements ApplicationRunner {
         log.info("###################################");
         log.info("##### Club Orchestrator START #####");
         log.info("###################################");
-        CLUB_ORCHESTRATOR_BASE = new HashMap<>();
-        ORCHESTRATOR_DTO_MEMORY = new HashMap<>();
+        CLUB_ORCHESTRATOR_BASE = new ConcurrentHashMap<>();
+        ORCHESTRATOR_DTO_MEMORY = new ConcurrentHashMap<>();
         log.info(">>>>>>>>>>>>> Global Blocking Queue TABLE = {}", CLUB_ORCHESTRATOR_BASE.hashCode());
         log.info(">>>>>>>>>>>>> Global Orchestration DTO TABLE = {}", CLUB_ORCHESTRATOR_BASE.hashCode());
     }
