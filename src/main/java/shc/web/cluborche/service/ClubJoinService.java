@@ -32,7 +32,6 @@ public class ClubJoinService {
                     requestQueueMap,
                     KafkaOrchestrationDto.builder().topic("shc.club.join").key("REQUEST")
                             .kafkaKeyDto(KafkaKeyDto.builder().gid(req.getGid())
-                                    .method("REQUEST")
                                     .clubId(Long.parseLong((String) req.getData().get("clubId")))
                                     .hwnName((String) req.getData().get("hwnName"))
                                     .phone((String) req.getData().get("phone"))
@@ -44,7 +43,6 @@ public class ClubJoinService {
                     requestQueueMap,
                     KafkaOrchestrationDto.builder().topic("shc.pay").key("REQUEST")
                             .kafkaKeyDto(KafkaKeyDto.builder().gid(req.getGid())
-                                    .method("REQUEST")
                                     .clubId(Long.parseLong((String) req.getData().get("clubId")))
                                     .dues(Long.parseLong((String) req.getData().get("dues")))
                                     .hwnName((String) req.getData().get("hwnName"))
@@ -56,15 +54,13 @@ public class ClubJoinService {
                     requestQueueMap,
                     KafkaOrchestrationDto.builder().topic("shc.ext.payment").key("REQUEST")
                             .kafkaKeyDto(KafkaKeyDto.builder().gid(req.getGid())
-                                    .method("REQUEST")
                                     .build())
                             .build());
 
             orchestrationManager.sendKafkaEventAndPass(
                     req.getGid(),
-                    KafkaOrchestrationDto.builder().topic("shc.sms").key("SUCCESS")
+                    KafkaOrchestrationDto.builder().topic("shc.sms").key("REQUEST")
                             .kafkaKeyDto(KafkaKeyDto.builder().gid(req.getGid())
-                                    .method("REQUEST")
                                     .hwnName((String) req.getData().get("hwnName"))
                                     .phone((String) req.getData().get("phone"))
                                     .build())

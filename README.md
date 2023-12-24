@@ -1,4 +1,3 @@
-
 ## Goal
 
 효율적이고 지속 가능한 **MSA 애플리케이션** 개발을 위한 **SAGA 오케스트레이터 프레임워크**
@@ -79,15 +78,270 @@ Domain 담당자는 로컬 트랜잭션을 관리하는 REST API를 개발하고
 
 Orchestrator 에서는 각 Domain 으로 향하는 Kafka event의 순차처리와 보상트랜잭션을 관리한다.
 
-Service method 에서 Kafka event 를 **순서대로 발송하는 코드**를 작성하고, 발송된 event의 result **토픽을 listen 하는 listener**를 정의한다.
+##### 4-1. Service class / Listener class
 
-- ex) /club/join 으로 동작하는 join 메서드에서는, 아래 토픽으로 kafka 이벤트를 발송한다.
+```java
+import shc.web.cluborche.dto.KafkaOrchestrationDto;
+import shc.web.cluborche.exception.KafkaFailException;
+import shc.web.cluborche.util.OrchestrationManager;
 
-- shc.club.join -> shc.pay -> shc.ext.payment -> shc.sms 
+import java.util.Map;
+import java.util.concurrent.BlockingQueue;
 
-- 이벤트를 발송한 뒤 응답을 기다릴 수 있고, 기다리지 않을 수도 있다.
+import static shc.web.cluborche.util.OrchestrationBase.*;
 
-모듈에서 실패 응답이 돌아왔을 때의 보상트랜잭션 처리는, **오케스트레이터가 자동으로 진행해준다.**
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class ClubJoinService {
+
+    private final OrchestrationManager orchestrationManager;
+
+    public ClubJoinRsp join(ClubJoinReq req) {
+        ClubJoinRsp rsp = ClubJoinRsp.builder().gid(req.getGid()).build();
+        Map<String, BlockingQueue<String>> requestQueueMap = InitiateSAGA(req.getGid());
+        try {
+            orchestrationManager.sendKafkaEventAndWait(
+                    req.getGid(),
+                    requestQueueMap,
+                    KafkaOrchestrationDto.builder().topic("shc.club.join").key("REQUEST")
+                            .kafkaKeyDto(KafkaKeyDto.builder().gid(req.getGid())
+                                    // make input DTO
+                                    .build())
+                            .build());
+
+            orchestrationManager.sendKafkaEventAndWait(
+                    req.getGid(),
+                    requestQueueMap,
+                    KafkaOrchestrationDto.builder().topic("shc.pay").key("REQUEST")
+                            .kafkaKeyDto(KafkaKeyDto.builder().gid(req.getGid())
+                                    // make input DTO
+                                    .build())
+                            .build());
+
+            orchestrationManager.sendKafkaEventAndWait(
+                    req.getGid(),
+                    requestQueueMap,
+                    KafkaOrchestrationDto.builder().topic("shc.ext.payment").key("REQUEST")
+                            .kafkaKeyDto(KafkaKeyDto.builder().gid(req.getGid())
+                                    // make input DTO
+                                    .build())
+                            .build());
+
+            orchestrationManager.sendKafkaEventAndPass(
+                    req.getGid(),
+                    KafkaOrchestrationDto.builder().topic("shc.sms").key("REQUEST")
+                            .kafkaKeyDto(KafkaKeyDto.builder().gid(req.getGid())
+                                    // make input DTO
+                                    .build())
+                            .build());
+
+            rsp.setCode("200");
+        } catch (KafkaFailException e) {
+            orchestrationManager.activateCompensation(req.getGid());
+            rsp.setCode("500");
+        } finally {
+            TerminateSAGA(req.getGid());
+        }
+        return rsp;
+    }
+
+}
+```
+
+##### 4-1-1. initiate SAGA
+
+```java
+    public static Map<String, BlockingQueue<String>> InitiateSAGA(String GID) {
+        Map<String, BlockingQueue<String>> requestQueueMap = new HashMap<>();
+        Map<String, KafkaOrchestrationDto> orchestrationDtoMap = new HashMap<>();
+
+        CLUB_ORCHESTRATOR_BASE.put(GID, requestQueueMap);
+        ORCHESTRATOR_DTO_MEMORY.put(GID, orchestrationDtoMap);
+
+        log.info(">>>>>>>>>>>> INITIATE SAGA with [GID = {}]", GID);
+
+        return requestQueueMap;
+    }
+```
+
+
+
+서비스 메서드 진입 시점에 `InitiateSAGA(req.getGid())` 를 선언하여, 해당 **GID** 에 대한 트랜잭션 관리를 시작한다.
+
+**토픽 순차처리 및 보상트랜잭션 관리**를 위한 `BlockingQueue` 를 `Map` 으로 리턴받아, 메서드 내부에서 사용한다.
+
+##### 4-1-2. KafkaFailException에 대한 try-catch
+
+`OrchestrationManager` 클래스는, 외부 모듈에서 돌아온 Kafka 이벤트의 결과값이 Fail인 경우 `KafkaFailException` 을 발생시킨다.
+
+- 외부 모듈의 Fail 을 인지하는 방법은 후술한다.
+
+토픽 순차처리는 기본적으로 `KafkaFailException` 을 `catch` 하는 `try` 블록 내부에서 이루어지기 때문에, 중간에 예외가 발생하면 이후 토픽은 **송신하지 않게 되어** 안정성을 확보한다.
+
+#### 4-1-3. 외부 모듈에 대한 Kafka 이벤트 순차 발송
+
+`OrchestrationManager` 는 두 가지 메서드를 제공한다.
+
+- `sendKafkaEventAndWait()`
+
+- `sendKafkaEventAndPass()`
+
+Kafka 이벤트를 외부 모듈에 발송한 이후 **결과값을 기다리는지 여부**에 따라 선택적으로 활용할 수 있다.
+
+- 기술적으로는, **`BlockingQueue` 를 이용해 Sync process 처리하는지 여부**가 결정된다.
+
+- 두 메서드의 사용법은 유사하나, `initiateSAGA` 시점에 확보한 `requestQueueMap` 을 파라미터로 넘기는지의 여부가 다르다.
+
+- `sendKafkaEventAndWait()` 메서드의 경우, 메시지 발송과 함께 해당 Topic을 다루는 `BlockingQueue`가 **대기 상태**에 들어가서 **응답을 기다리게 된다**.
+
+- ```java
+      public static String WaitKafkaResponse(Map<String, BlockingQueue<String>> requestQueueMap, String topic) {
+          String result = "FAIL";
+          try {
+              log.info(">>>>>>>>>>>> Blocking Queue WAIT, [topic = {}]", topic);
+              result = requestQueueMap.get(topic).take();
+              log.info(">>>>>>>>>>>> Blocking Queue RESPONDED, [topic = {}, RESULT = {}]", topic, result);
+          } catch (InterruptedException e) {
+              throw new RuntimeException(e);
+          }
+          return result;
+      }
+  ```
+
+- 그 응답을 받아내는 것은 아래의 **Listener 클래스**이다.
+
+#### 4-1-4. `sendKafkaEventAndWait()` 대한 Topic 네이밍 룰과 Listener 구현
+
+각 모듈과의 스펙을 정의할 때, 정상적인 첫번째 이벤트 발송 Key를 **REQUEST**로 통일한다.
+
+모듈로부터 응답을 기다리고자 하는 경우, (`sendKafkaEventAndWati()` 를 사용한 경우)
+
+발송했던 **Topic**에서 **`.result` 를 붙인 Topic을 Listening 하는 클래스**를 오케스트레이터에서 선언해야 한다.
+
+```java
+import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.KafkaHeaders;
+import org.springframework.messaging.handler.annotation.Header;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.stereotype.Component;
+
+import static shc.web.cluborche.util.OrchestrationBase.PushSingleBlockingQueue;
+
+@Component
+@Slf4j
+public class ClubJoinListener {
+
+    @KafkaListener(topics = "shc.club.join.result", groupId = "shc", containerFactory = "clubKafkaListenerContainerFactory")
+    public void listenJoin(
+            @Payload KafkaKeyDto kafkaKeyDTO,
+            @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String key,
+            @Header(KafkaHeaders.RECEIVED_TOPIC) String topic) throws InterruptedException {
+        PushSingleBlockingQueue(kafkaKeyDTO.getGid(), topic.replaceAll("\\.result$", ""), key);
+    }
+
+    @KafkaListener(topics = "shc.pay.result", groupId = "shc", containerFactory = "clubKafkaListenerContainerFactory")
+    public void listenPayment(@Payload KafkaKeyDto kafkaKeyDTO,
+                              @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String key,
+                              @Header(KafkaHeaders.RECEIVED_TOPIC) String topic) throws InterruptedException {
+        PushSingleBlockingQueue(kafkaKeyDTO.getGid(), topic.replaceAll("\\.result$", ""), key);
+    }
+
+    @KafkaListener(topics = "shc.ext.payment.result", groupId = "shc", containerFactory = "clubKafkaListenerContainerFactory")
+    public void listenExtPayment(@Payload KafkaKeyDto kafkaKeyDTO,
+                              @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String key,
+                              @Header(KafkaHeaders.RECEIVED_TOPIC) String topic) throws InterruptedException {
+        PushSingleBlockingQueue(kafkaKeyDTO.getGid(), topic.replaceAll("\\.result$", ""), key);
+    }
+
+}
+
+
+```
+
+
+
+위 클래스는 `ClubJoinService` 에 대응하는 `ClubJoinListener`로,
+
+대응하는 서비스 클래스에서 `sendKafkaEventAndWait()` 를 선언한 **Topic**에 대해 그 **결과를 Listening**하고 있다.
+
+- suffix에 해당하는 `.result` 를 붙인 상태로 Topic을 Listening 하고 있다가,
+
+- 해당 이벤트를 수신하면 결과에 해당하는 **Key**를 **원본 Topic이 대기 중인 `BlockingQueue` 에 Push** 한다.
+
+- 이로써 서비스 클래스의 `sendKafkaEventAndWait` 는 외부 모듈의 응답을 받아낼 수 있고,
+
+- `BlockingQueue` 에 의해 중단됐던 메서드가 다음 이벤트 송신으로 진행할 수 있다.
+
+#### 4-1-5. 모듈 응답 이벤트의 Key 네이밍 룰
+
+각 모듈에서는 처리 결과에 대해서 **Topic** 네이밍 룰을 지켜야하고, (위 Listener 클래스에 대응)
+
+이에 더하여 **Key** 값에 대해서도 네이밍 룰을 지켜야 한다.
+
+API 처리 결과가 성공인 경우 **SUCCESS**, 실패인 경우 **FAIL**을 명시적으로 리턴해야 한다.
+
+```java
+    public void sendKafkaEventAndWait(String gid, Map<String, BlockingQueue<String>> requestQueueMap, KafkaOrchestrationDto orchestrationDto) throws KafkaFailException {
+        log.info(">>>>>>>>>> sendKafkaEventAnd WAIT : [TOPIC = {} , KEY = {}]", orchestrationDto.getTopic(), orchestrationDto.getKey());
+        requestQueueMap.put(orchestrationDto.getTopic(), new ArrayBlockingQueue<>(1));
+        kafkaTemplate.send(orchestrationDto.getTopic(), orchestrationDto.getKey(), orchestrationDto.getKafkaKeyDto());
+        String result = WaitKafkaResponse(requestQueueMap, orchestrationDto.getTopic());
+        if ("FAIL".equals(result)) {
+            log.error(">>>>>>>>>>>>>>> COMPENSATION : [GID = {}]", gid);
+            log.error(">>>>>>>>>>>>>>> Caused By : [TOPIC = {}]", orchestrationDto.getTopic());
+            throw new KafkaFailException();
+        }
+        StoreKafkaDtoMemory(gid, orchestrationDto);
+    }
+```
+
+
+
+위는 `sendKafkaEventAndWait()` 메서드로, `String result` 가 모듈의 응답에서 리턴된 **Key** 값에 해당한다.
+
+해당 Key 값이 **FAIL**인 경우, `KafkaFailException` 을 발생시킴으로써 **서비스 메서드의 진행을 중단**시키게 된다.
+
+#### 4-1-6. 보상트랜잭션 발생
+
+```java
+    public void activateCompensation(String gid) {
+        log.warn(">>>>>>>>>> COMPENSATE START : [GID = {}]", gid);
+        GetDtoMemory(gid).forEach((String topic, KafkaOrchestrationDto kafkaOrchestrationDto) -> {
+            log.warn(">>>>>>>>>> COMPENSATE : [TOPIC = {}]", topic);
+            sendKafkaCompensation(kafkaOrchestrationDto);
+        });
+    }
+```
+
+
+
+서비스 클래스는 `catch` 블록에서 `activateCompensation()` 을 호출하여 보상트랜잭션을 발생시킨다.
+
+`OrchestrationManager`는, GID에 기반하여 메모리에서 **그동안 해당 메서드가 성공 응답을 받은 wait 이벤트에 대해 Topic과 사용한 DTO**를 로딩한다.
+
+- `sendKafkaEventAndWait()` 메서드가 성공으로 끝나는 시점에, DTO Memory에 `put()` 하는 처리를 진행함 (`StoreKafkaDtoMemory()`)
+
+이후 **Key** 값을 **FAIL**로 입력하여 각 모듈로 이벤트를 송신하면, 사전 규약에 의해 각 모듈에서 보상트랜잭션 API를 작동시키게 된다.
+
+#### 4-1-7. terminate SAGA
+
+```java
+    public static void TerminateSAGA(String GID) {
+        log.info(">>>>>>>>>>>> TERMINATE SAGA with [GID = {}]", GID);
+
+        CLUB_ORCHESTRATOR_BASE.remove(GID);
+        ORCHESTRATOR_DTO_MEMORY.remove(GID);
+    }
+```
+
+
+
+메서드가 성공적으로 종료하면 200 코드를, Exception이 발생하면 500 코드를 리턴하며
+
+`finally` 블록에서 `TerminateSAGA` 를 통해 **GID 삭제 및 관련된 메모리 초기화**를 진행한다.
+
+
 
 ---
 
@@ -186,10 +440,8 @@ SAGA 구현과 같은 아키텍처 레벨의 고민을 최소화한 가운데 �
 
 - `Listener` 클래스 개선
 
-- Kafka Topic 네이밍 룰을 강제하기 위한 시스템 마련
+- Kafka Topic, Key 네이밍 룰을 강제하기 위한 시스템 마련
 
 - `Orchestration` 공통 코드 안정성 확보 (예외처리 등)
 
 - `Orchestration` 공통 코드 Freezing 및 library packaging
-
-
