@@ -8,19 +8,23 @@
 
 ![](./image/System_Concept.png)
 
-동호회 플랫폼을 예시로 함
+동호회 플랫폼을 예시로 하며,
 
 해당 프로젝트에서 구현된 부분은 **Club Orchestrator**
 
-### Layer Concept
+- 동일한 구성의 오케스트레이터 파드를 Payment, Ext-pay, Mail 이라는 이름으로 생성할 수 있음
+
+---
+
+## Layer Concept
 
 4계층으로 구성
 
 - Frontend - **Service Layer** - **Domain Layer** - DB
 
-- 기존 Monolithic MVC의 서비스 계층을 두 개로 분리하고, 기능 간의 경계를 보다 명확히 함
+- 기존 Monolithic MVC의 **서비스 계층을 두 개로 분리**하고, 기능 간의 경계를 보다 명확히 함
 
-#### Service Layer
+### Service Layer
 
 Controller 가 위치함으로써 Frontend와의 통신을 전담
 
@@ -28,13 +32,15 @@ Controller 가 위치함으로써 Frontend와의 통신을 전담
 
 **오케스트레이터** 파드가 위치
 
-#### Domain Layer
+### Domain Layer
 
 Kafka 이벤트에 의해 작동하는 **무상태 API**로 고유의 Persistence를 관리
 
 도메인 **모듈** 파드가 위치
 
-### SAGA-Orchestrator Framework
+---
+
+## SAGA-Orchestrator Framework
 
 Kafka 이벤트 송수신 과정에 대한 **순차 처리**, **보상트랜잭션 처리 로직** 같이
 
@@ -46,13 +52,88 @@ Kafka 이벤트 송수신 과정에 대한 **순차 처리**, **보상트랜잭�
 
 ---
 
+## Implementation Detail
+
+**일반론적 측면**에 집중하여 아키텍처 구성과 실제 구현 내용에 대해 기술한다.
+
+### Sequential & Synchronized Orchestration
+
+![](./image/Sequential&Synchronized_Orchestration.png)
+
+#### 1. 클라이언트 최초 요청 시
+
+오케스트레이터는 클라이언트 요청이 최초 진입할 시 GID를 생성한다.
+그리고 해당 GID 에 매핑되는 두 가지 데이터를 메모리에 적재한다.
+
+- 해당 GID 가 발송하는 Kafka event 의 Topic 과 그에 대한 BlockingQueue 를 관리하는 ConcurrentHashMap
+- 해당 GID 가 발송하는 Kafka event 에서 사용했던 DTO 를 임시로 저장하고 관리하는 ConcurrentHashMap
+
+#### 2. Kafka 이벤트 발송 메서드의 2가지 종류
+
+Service 메서드에서는 각 모듈로 송신하는 Kafka 이벤트를 순차적으로 입력한다.
+각 이벤트 발송 시, 
+
+- 모듈로부터 응답 (*.result Topic) 이 돌아오는 것을 기다렸다가 진행할 지
+- 모듈의 응답을 기다리지 않을 지를 선택할 수 있다.
+
+#### 3. Kafka 이벤트 송수신 전 과정
+
+모듈로부터의 응답을 기다리고자 하는 경우 다음과 같은 순서로 Kakfa 이벤트 송수신이 일어난다.
+
+- 오케스트레이터는 A 모듈로 Topic = Test, Key = REQUEST 이벤트를 송신한다.
+  그리고 해당 GID, Topic 에 해당하는 BlockingQueue 를 생성하고,
+  BlockingQueue 로 결과값이 수신될 때까지 쓰레드를 정지시킨다.
+
+- A 모듈이 그에 대한 응답으로
+  Topic = Test.result, Key = SUCCESS 혹은
+  Topic = Test.result, Key = FAIL  이벤트를 송신한다.
+
+- 오케스트레이터의 Listener 클래스는 Topic=Test.result 를 수신받으면,
+  해당 GID, Topic 에 해당하는 BlockingQueue 로 응답 결과를 넣는다.
+
+- 이에 따라 BlockingQueue 로 정지시킨 쓰레드가 구동된다.
+
+모듈로부터의 응답을 기다리지 않는 경우, 오케스트레이터는 Kafka 이벤트만 송신할 뿐 별도의 BlockingQueue 처리를 하지 않는다.
+
+#### 4. 클라이언트 요청 반환 및 메모리 반환
+
+모든 과정이 끝나고 클라이언트로 응답을 보낼 때, 해당 GID 와 그에 매핑되는 메모리 내 데이터를 삭제처리한다.
+
+### Compensating Transaction for SAGA
+
+![](./image/Compensating_Transaction_for_SAGA.png)
+
+#### DTO 메모리의 역할
+
+Service 메서드는 보상트랜잭션을 구현하기 위해, 각 모듈로 향하는 이벤트의 DTO를 GID, Topic 에 매핑하여 메모리에 적재하게 된다. 
+
+#### 보상트랜잭션 발생 과정
+
+- 오케스트레이터가 A 모듈로 Topic = Test, Key = REQUEST 이벤트를 송신한 후 응답이 돌아왔을 때,
+
+- Test.result 의 Key 가 FAIL 인 경우 KafkaFailException 을 유발한다.
+
+- KafkaFailException이 발생한 오케스트레이터의 Service 메서드는 이후의 처리를 진행하지 못하고, 보상트랜잭션 로직으로 진입한다.
+
+- KafkaFailException 발생 시 유발되는 보상트랜잭션 로직에서는, 
+  메모리에서 해당 GID 에 매핑되는 Topic 과 DTO 를 찾아서,
+  Key = FAIL 로 설정한 카프카 이벤트를 각 모듈로 송신한다.
+
+- 이를 통해 각 모듈에서 기존에 처리된 내용들이 롤백되고,
+
+- GID 삭제 등 공통 로직이 동작하면서 메서드가 종료한다.
+
+---
+
 ## Development Guide
 
-해당 프레임워크를 이용한 MSA Application 개발 과정을 간단하게 제시해본다.
+위에서 이론적으로 설명한 프레임워크의 구성을 바탕으로,
+
+해당 프레임워크의 장점을 활용할 수 있는 **실제 개발 가이드**를 기술한다.
 
 #### 1. 기능에 대한 Domain R&R 부여
 
-Client 에게 표시되는 화면이나 Domain 밀접성을 기준으로, 각 기능은 R&R 이 부여된다.
+Client 에게 표시되는 화면이나 Domain 밀접성을 기준으로, 각 기능에 R&R 이 부여된다.
 
 - ex) 클럽 가입 신청 기능은 Club Domain 에 해당할 것
 
@@ -76,7 +157,7 @@ Domain 담당자는 로컬 트랜잭션을 관리하는 REST API를 개발하고
 
 #### 4. Orchestrator 개발
 
-Orchestrator 에서는 각 Domain 으로 향하는 Kafka event의 순차처리와 보상트랜잭션을 관리한다.
+Orchestrator 에서는 **각 Domain 으로 향하는 Kafka event의 순차처리와 보상트랜잭션을 관리**한다.
 
 ##### 4-1. Service class / Listener class
 
@@ -164,8 +245,6 @@ public class ClubJoinService {
         return requestQueueMap;
     }
 ```
-
-
 
 서비스 메서드 진입 시점에 `InitiateSAGA(req.getGid())` 를 선언하여, 해당 **GID** 에 대한 트랜잭션 관리를 시작한다.
 
@@ -255,11 +334,7 @@ public class ClubJoinListener {
     }
 
 }
-
-
 ```
-
-
 
 위 클래스는 `ClubJoinService` 에 대응하는 `ClubJoinListener`로,
 
@@ -296,8 +371,6 @@ API 처리 결과가 성공인 경우 **SUCCESS**, 실패인 경우 **FAIL**을 
     }
 ```
 
-
-
 위는 `sendKafkaEventAndWait()` 메서드로, `String result` 가 모듈의 응답에서 리턴된 **Key** 값에 해당한다.
 
 해당 Key 값이 **FAIL**인 경우, `KafkaFailException` 을 발생시킴으로써 **서비스 메서드의 진행을 중단**시키게 된다.
@@ -313,8 +386,6 @@ API 처리 결과가 성공인 경우 **SUCCESS**, 실패인 경우 **FAIL**을 
         });
     }
 ```
-
-
 
 서비스 클래스는 `catch` 블록에서 `activateCompensation()` 을 호출하여 보상트랜잭션을 발생시킨다.
 
@@ -335,84 +406,9 @@ API 처리 결과가 성공인 경우 **SUCCESS**, 실패인 경우 **FAIL**을 
     }
 ```
 
-
-
 메서드가 성공적으로 종료하면 200 코드를, Exception이 발생하면 500 코드를 리턴하며
 
 `finally` 블록에서 `TerminateSAGA` 를 통해 **GID 삭제 및 관련된 메모리 초기화**를 진행한다.
-
-
-
----
-
-## Implementation Detail
-
-### Sequential & Synchronized Orchestration
-
-![](./image/Sequential&Synchronized_Orchestration.png)
-
-#### 1. 클라이언트 최초 요청 시
-
-오케스트레이터는 클라이언트 요청이 최초 진입할 시 GID를 생성한다.
-그리고 해당 GID 에 매핑되는 두 가지 데이터를 메모리에 적재한다.
-
-- 해당 GID 가 발송하는 Kafka event 의 Topic 과 그에 대한 BlockingQueue 를 관리하는 HashMap
-- 해당 GID 가 발송하는 Kafka event 에서 사용했던 DTO 를 임시로 저장하고 관리하는 HashMap
-
-#### 2. Kafka 이벤트 발송 메서드의 2가지 종류
-
-Service 메서드에서는 각 모듈로 송신하는 Kafka 이벤트를 순차적으로 입력한다.
-각 이벤트 발송 시, 
-
-- 모듈로부터 응답 (*.result Topic) 이 돌아오는 것을 기다렸다가 진행할 지
-- 모듈의 응답을 기다리지 않을 지를 선택할 수 있다.
-
-#### 3. Kafka 이벤트 송수신 전 과정
-
-모듈로부터의 응답을 기다리고자 하는 경우 다음과 같은 순서로 Kakfa 이벤트 송수신이 일어난다.
-
-- 오케스트레이터는 A 모듈로 Topic = Test, Key = REQUEST 이벤트를 송신한다.
-  그리고 해당 GID, Topic 에 해당하는 BlockingQueue 를 생성하고,
-  BlockingQueue 로 결과값이 수신될 때까지 쓰레드를 정지시킨다.
-
-- A 모듈이 그에 대한 응답으로
-  Topic = Test.result, Key = SUCCESS 혹은
-  Topic = Test.result, Key = FAIL  이벤트를 송신한다.
-
-- 오케스트레이터의 Listener 클래스는 Topic=Test.result 를 수신받으면,
-  해당 GID, Topic 에 해당하는 BlockingQueue 로 응답 결과를 넣는다.
-
-- 이에 따라 BlockingQueue 로 정지시킨 쓰레드가 구동된다.
-
-모듈로부터의 응답을 기다리지 않는 경우, 오케스트레이터는 Kafka 이벤트만 송신할 뿐 별도의 BlockingQueue 처리를 하지 않는다.
-
-#### 4. 클라이언트 요청 반환 및 메모리 반환
-
-모든 과정이 끝나고 클라이언트로 응답을 보낼 때, 해당 GID 와 그에 매핑되는 메모리 내 데이터를 삭제처리한다.
-
-### Compensating Transaction for SAGA
-
-![](./image/Compensating_Transaction_for_SAGA.png)
-
-#### DTO 메모리의 역할
-
-Service 메서드는 보상트랜잭션을 구현하기 위해, 각 모듈로 향하는 이벤트의 DTO를 GID, Topic 에 매핑하여 메모리에 적재하게 된다. 
-
-#### 보상트랜잭션 발생 과정
-
-- 오케스트레이터가 A 모듈로 Topic = Test, Key = REQUEST 이벤트를 송신한 후 응답이 돌아왔을 때,
-
-- Test.result 의 Key 가 FAIL 인 경우 KafkaFailException 을 유발한다.
-
-- KafkaFailException이 발생한 오케스트레이터의 Service 메서드는 이후의 처리를 진행하지 못하고, 보상트랜잭션 로직으로 진입한다.
-
-- KafkaFailException 발생 시 유발되는 보상트랜잭션 로직에서는, 
-  메모리에서 해당 GID 에 매핑되는 Topic 과 DTO 를 찾아서,
-  Key = FAIL 로 설정한 카프카 이벤트를 각 모듈로 송신한다.
-
-- 이를 통해 각 모듈에서 기존에 처리된 내용들이 롤백되고,
-
-- GID 삭제 등 공통 로직이 동작하면서 메서드가 종료한다.
 
 ---
 
@@ -424,9 +420,7 @@ Service 메서드는 보상트랜잭션을 구현하기 위해, 각 모듈로 �
 
 #### 신규 기능 개발 시의 생산성 향상
 
-SAGA 구현과 같은 아키텍처 레벨의 고민을 최소화한 가운데 비즈니스 로직에 집중하도록 함으로써,
-
-신규 기능을 빠르게 개발하는 데 도움이 됨
+SAGA 구현과 같은 아키텍처 레벨의 고민을 최소화한 가운데 비즈니스 로직에 집중하도록 함으로써, 신규 기능을 빠르게 개발할 수 있음.
 
 ---
 
