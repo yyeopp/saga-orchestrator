@@ -15,8 +15,8 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 public class OrchestrationBase implements ApplicationRunner {
 
-    public static Map<String, Map<String, BlockingQueue<String>>> CLUB_ORCHESTRATOR_BASE;
-    public static Map<String, Map<String, KafkaOrchestrationDto>> ORCHESTRATOR_DTO_MEMORY;
+    private static Map<String, Map<String, BlockingQueue<String>>> CLUB_ORCHESTRATOR_BASE;
+    private static Map<String, Map<String, KafkaOrchestrationDto>> ORCHESTRATOR_DTO_MEMORY;
 
     /**
      * SpringBoot Run 시점에, CLUB_ORCHESTRATOR_BASE 와 ORCHESTRATOR_DTO_MEMORY 를 로딩

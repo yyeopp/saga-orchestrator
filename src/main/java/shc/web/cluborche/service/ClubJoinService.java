@@ -7,13 +7,8 @@ import shc.web.cluborche.dto.ClubJoinReq;
 import shc.web.cluborche.dto.ClubJoinRsp;
 import shc.web.cluborche.dto.KafkaKeyDto;
 import shc.web.cluborche.dto.KafkaOrchestrationDto;
-import shc.web.cluborche.exception.KafkaFailException;
 import shc.web.cluborche.util.OrchestrationManager;
-
-import java.util.Map;
-import java.util.concurrent.BlockingQueue;
-
-import static shc.web.cluborche.util.OrchestrationBase.*;
+import shc.web.cluborche.util.OrchestrationServiceTemplate;
 
 
 @Service
@@ -22,11 +17,11 @@ import static shc.web.cluborche.util.OrchestrationBase.*;
 public class ClubJoinService {
 
     private final OrchestrationManager orchestrationManager;
+    private final OrchestrationServiceTemplate template;
 
     public ClubJoinRsp join(ClubJoinReq req) {
-        ClubJoinRsp rsp = ClubJoinRsp.builder().gid(req.getGid()).build();
-        Map<String, BlockingQueue<String>> requestQueueMap = InitiateSAGA(req.getGid());
-        try {
+
+        return (ClubJoinRsp) template.execute(req, requestQueueMap -> {
             orchestrationManager.sendKafkaEventAndWait(
                     req.getGid(),
                     requestQueueMap,
@@ -65,15 +60,7 @@ public class ClubJoinService {
                                     .phone((String) req.getData().get("phone"))
                                     .build())
                             .build());
+        });
 
-            rsp.setCode("200");
-        } catch (KafkaFailException e) {
-            orchestrationManager.activateCompensation(req.getGid());
-            rsp.setCode("500");
-        } finally {
-            TerminateSAGA(req.getGid());
-        }
-        return rsp;
     }
-
 }
